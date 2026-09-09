@@ -4,11 +4,31 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "fiverify"
-version = "0.1.0"
+version = "0.1.1"
 description = "Offline validation of France Identité signed PDFs (PAdES-T qualified seals)"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Butanal", email = "benji.sepe@gmail.com" }]
+keywords = ["france-identite", "pades", "cades", "pdf", "signature", "eidas"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Topic :: Security :: Cryptography",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = ["asn1crypto>=1.5", "cryptography>=41"]
+
+[project.urls]
+Homepage = "https://github.com/Butanal/fiverify"
+Repository = "https://github.com/Butanal/fiverify"
+Issues = "https://github.com/Butanal/fiverify/issues"
 
 [project.scripts]
 fi-verify = "fiverify.cli:main"

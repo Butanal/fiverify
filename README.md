@@ -8,21 +8,16 @@ validation time and revocation data are inputs.
 
 ## Install
 
-Not on PyPI. Install from a clone or an unpacked copy:
+    pip install fiverify
 
-    cd fiverify
-    python3 -m venv venv
-    ./venv/bin/pip install .          # or: -e . to work on it
-
-That puts `fi-verify` in `venv/bin/`. Run it as `./venv/bin/fi-verify`, or
-activate the environment first (`source venv/bin/activate`) and just use
-`fi-verify`. Without a virtualenv, `pip install --user .` works too.
+Or from a clone, to work on it: `pip install -e .` (`pip install --user -e .`
+outside a virtualenv).
 
 Python 3.11+. Pulls in `asn1crypto` and `cryptography`; nothing else.
 
 ## Quick start
 
-    ./venv/bin/fi-verify attestation.pdf --fetch-revocation
+    fi-verify attestation.pdf --fetch-revocation
 
 ```python
 from fiverify import Status, verify_file

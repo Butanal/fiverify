@@ -4,7 +4,7 @@ from .report import Check, Report, Severity, SignatureReport, Status, SubIndicat
 from .revocation import RevocationStore
 from .verify import verify_file, verify_pdf
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 __all__ = [
     "verify_pdf", "verify_file", "Profile", "ProfileError", "RevocationStore",
     "Report", "SignatureReport", "Check", "Status", "Severity", "SubIndication",
