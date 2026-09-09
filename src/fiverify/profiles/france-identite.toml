@@ -1,0 +1,43 @@
+name = "france-identite"
+version = "2026-09"
+description = "France Identité attestation — PAdES-T qualified electronic seal"
+
+[document]
+allowed_subfilters = ["ETSI.CAdES.detached"]
+require_full_coverage = true
+
+[crypto]
+digest_algorithms = ["sha256", "sha384", "sha512"]
+signature_algorithms = ["rsassa_pkcs1v15", "rsassa_pss", "ecdsa"]
+min_rsa_bits = 2048
+min_ec_bits = 256
+
+[signature]
+# signingTime is nulled to the epoch by design; only the timestamp is authoritative.
+signing_time = "epoch"
+signature_policy_oid = "1.2.250.1.152.202.1.1.1"
+commitment_type_oid = "1.2.840.113549.1.9.16.6.1"
+require_signing_certificate_binding = true
+
+[qualified]
+require_qc_compliance = true
+require_qc_sscd = true
+qc_type = "eSeal"
+key_usage = ["digital_signature", "non_repudiation"]
+
+[timestamp]
+required = true
+policy_oid = "1.2.250.1.152.6.1.3.1"
+require_critical_eku = true
+max_accuracy_seconds = 60
+
+[trust]
+anchors = ["ac-serveur-cachet-eidas-2025.pem"]
+pinned_sha256 = ["96693ee8a4310e9c21893021b536e28d844a3587789b4c3d6c436e456db71871"]
+
+[trust.provenance]
+lotl = "https://ec.europa.eu/tools/lotl/eu-lotl.xml"
+tsl = "https://messervices.cyber.gouv.fr/visas/tl-fr_v6.xml"
+provider = "Ministère de l'Intérieur"
+services = ["AC Serveur Cachet eIDAS 2025 (QC, granted)", "Horodatage MI-19 (QTST, granted)"]
+checked = "2026-09-09"

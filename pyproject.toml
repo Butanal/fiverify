@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fiverify"
+version = "0.1.0"
+description = "Offline validation of France Identité signed PDFs (PAdES-T qualified seals)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["asn1crypto>=1.5", "cryptography>=41"]
+
+[project.scripts]
+fi-verify = "fiverify.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+fiverify = ["profiles/*.toml", "anchors/*.pem"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "tests"]
+testpaths = ["tests"]

@@ -1,0 +1,12 @@
+name = "observe"
+version = "1"
+description = "Structural checks only — reports what a document contains without asserting policy"
+
+[document]
+require_full_coverage = true
+
+[signature]
+signing_time = "any"
+
+[timestamp]
+required = false
