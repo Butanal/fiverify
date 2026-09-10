@@ -15,6 +15,7 @@ NAME_RE = re.compile(rb"/([A-Za-z0-9#_.\-]+)\s*")
 KNOWN = ("id", "recipient", "familyName", "givenName", "gender", "nationality",
          "birthdate", "birthplace", "todayDate", "validityDate", "reason")
 MIN_KNOWN = 3
+MAX_STREAM = 16 << 20   # Flate runs ~1000:1 on padding; no attribute record is this big
 OCTAL = {ord("n"): 10, ord("r"): 13, ord("t"): 9, ord("b"): 8, ord("f"): 12}
 
 
@@ -99,7 +100,7 @@ def _bodies(data: bytes):
             raw = s.group(1)
             if b"/FlateDecode" in body:
                 try:
-                    yield zlib.decompressobj().decompress(raw)
+                    yield zlib.decompressobj().decompress(raw, MAX_STREAM)
                 except zlib.error:
                     continue
             else:

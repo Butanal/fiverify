@@ -60,51 +60,76 @@ def verify_pdf(data: bytes, *, profile: Profile | None = None,
     report.add(Check("pdf.signatures", Status.PASSED,
                      f"{len(fields)} signature field(s)", severity=Severity.INFO,
                      evidence={"count": len(fields)}))
-    if fetch_revocation:
-        from .online import certificates_in, fetch_crls  # the only network path
-
-        store = revocation or RevocationStore()
-        before = len(store)
-        revocation, errors = fetch_crls(certificates_in(data), store=store)
-        got = len(revocation) - before
-        if not got and not errors:
-            summary = "no CRL distribution point in the certificates — nothing to download"
-        else:
-            summary = (f"downloaded {got} CRL(s)"
-                       + (f"; {len(errors)} download(s) failed" if errors else ""))
-        report.add(Check("revocation.fetch",
-                         Status.PASSED if got and not errors else Status.INDETERMINATE,
-                         summary, severity=Severity.INFO,
-                         evidence={"errors": errors, "downloaded": got}))
-    if not revocation:
-        report.caveats.append("revocation status not checked")
+    checkers = []
     for f in fields:
         checker = _SignatureChecker(profile, strict, at, accept_unchecked_revocation,
                                     revocation, strict_revocation)
         report.signatures.append(checker.run(data, f))
+        checkers.append(checker)
+    if fetch_revocation:
+        revocation = _fetch(report, checkers, revocation)
+    if not revocation:
+        report.caveats.append("revocation status not checked")
+    for checker in checkers:
+        checker.revocation = revocation
+        checker.finish()
         report.caveats.extend(c for c in checker.caveats if c not in report.caveats)
     if extract_attributes:
         _extract(report, data)
     return report
 
 
-INTEGRITY = ("pdf.coverage", "cms.message_digest", "cms.signature")
+def _fetch(report: Report, checkers: list["_SignatureChecker"],
+           store: RevocationStore | None) -> RevocationStore | None:
+    """Download the CRLs named by certificates that reached a trust anchor.
+
+    After the chains are built, not before: opening a distribution point on an
+    unanchored certificate's say-so lets any PDF aim fiverify at a host it picks.
+    """
+    from .online import fetch_crls  # the only network path
+
+    store = store or RevocationStore()
+    certs = [c for ch in checkers for c in ch.anchored_certs()]
+    if not certs:
+        report.add(Check("revocation.fetch", Status.INDETERMINATE,
+                         "nothing downloaded — no chain reached a trust anchor, and an "
+                         "unanchored certificate's distribution point is not fetched",
+                         severity=Severity.INFO,
+                         evidence={"errors": [], "downloaded": 0}))
+        return store
+    before = len(store)
+    store, errors = fetch_crls(certs, store=store)
+    got = len(store) - before
+    if not got and not errors:
+        summary = "no CRL distribution point in the certificates — nothing to download"
+    else:
+        summary = (f"downloaded {got} CRL(s)"
+                   + (f"; {len(errors)} download(s) failed" if errors else ""))
+    report.add(Check("revocation.fetch",
+                     Status.PASSED if got and not errors else Status.INDETERMINATE,
+                     summary, severity=Severity.INFO,
+                     evidence={"errors": errors, "downloaded": got}))
+    return store
+
+
+AUTHENTIC = ("pdf.coverage", "cms.message_digest", "cms.signature", "chain.built")
 UNKNOWN_SUB = {"stale": SubIndication.TRY_LATER,
                "suspended": SubIndication.TRY_LATER,
                "no_crl": SubIndication.NO_REVOCATION_DATA}
 
 
-def _integrity_established(sig: SignatureReport) -> bool:
-    return all((c := sig.get(i)) is not None and c.status is Status.PASSED for i in INTEGRITY)
+def _authentic(sig: SignatureReport) -> bool:
+    return all((c := sig.get(i)) is not None and c.status is Status.PASSED for i in AUTHENTIC)
 
 
 def _extract(report: Report, data: bytes) -> None:
     """Attributes live in the PDF, so they are only meaningful if a signature
-    covers the bytes they came from. Refuse to hand over unverified content."""
-    if not any(_integrity_established(s) for s in report.signatures):
+    covers the bytes they came from and reaches an anchor. Integrity alone is
+    self-consistency: a forger signs their own work and it holds together."""
+    if not any(_authentic(s) for s in report.signatures):
         report.add(Check("attributes.withheld", Status.SKIPPED,
-                         "identity attributes not extracted — no signature establishes "
-                         "the integrity of these bytes",
+                         "identity attributes not extracted — no signature both covers "
+                         "these bytes and chains to a trust anchor",
                          severity=Severity.INFO))
         return
     report.attributes = attrs.extract(data)
@@ -130,6 +155,8 @@ class _SignatureChecker:
         self.revocation = revocation
         self.strict_revocation = strict_revocation
         self.chain = None
+        self.tsa_chain = None
+        self.view: SignedDataView | None = None
         self.caveats: list[str] = []
         self.rep: SignatureReport
 
@@ -147,6 +174,8 @@ class _SignatureChecker:
 
     # -- entry point --------------------------------------------------------
     def run(self, data: bytes, f: SignatureField) -> SignatureReport:
+        """Every stage but revocation, which finish() runs afterwards - leaving
+        the caller room to fetch CRLs once the chain has reached an anchor."""
         self.rep = SignatureReport(index=f.index)
         self.rep.details.update(
             byte_range=list(f.byte_range),
@@ -163,13 +192,23 @@ class _SignatureChecker:
             return self.rep
         self.add("cms.structure", Status.PASSED,
                  f"SignedData, {view.digest_algo}/{view.signature_algo}", severity=Severity.INFO)
+        self.view = view
         signed = f.signed_bytes(data)
         self._cms(view, signed)
         token = self._timestamp(view)
         self._chain(view, token)
         self._qualified(view)
-        self._revocation(view)
         return self.rep
+
+    def finish(self) -> None:
+        if self.view is not None:
+            self._revocation(self.view)
+
+    def anchored_certs(self) -> list[ax509.Certificate]:
+        """The only certificates whose distribution points this will open."""
+        return [c for chain in (self.chain, self.tsa_chain)
+                if chain is not None and chain.complete
+                for c in chain.certs]
 
     # -- stages -------------------------------------------------------------
     def _pdf(self, data: bytes, f: SignatureField) -> None:
@@ -372,9 +411,14 @@ class _SignatureChecker:
         return token if (bound and valid) else None
 
     def _chain(self, view: SignedDataView, token: TimestampToken | None) -> None:
-        poe = token.gen_time if token else self.at
+        trusted_time = self._tsa_chain(token)
+        poe = token.gen_time if trusted_time else self.at
         self.rep.details["poe"] = poe
-        self.rep.details["poe_source"] = "timestamp" if token else "wall clock"
+        self.rep.details["poe_source"] = "timestamp" if trusted_time else "wall clock"
+        if token is not None and not trusted_time:
+            self.caveats.append("timestamp not used as proof of existence — its TSA is "
+                                "not trusted, so expiry and revocation are measured "
+                                "against the clock")
         pool = list(view.certificates)
         chain = build_chain(view.signer_cert, pool, self.p.anchors)
         self.chain = chain
@@ -388,18 +432,29 @@ class _SignatureChecker:
             self.ok("chain.validity_at_poe", not errs,
                     f"every certificate was valid at {poe.isoformat()}",
                     "; ".join(errs), sub=SubIndication.EXPIRED, poe=poe)
-        if token:
-            tchain = build_chain(token.tsa_cert, list(token.view.certificates), self.p.anchors)
-            self.rep.details["tsa_chain"] = tchain.names()
-            self.ok("tsp.chain", tchain.complete,
-                    "TSA chain reaches the trust anchor",
-                    f"TSA has no trusted chain: {tchain.error}",
-                    severity=Severity.POLICY, sub=SubIndication.NO_CERTIFICATE_CHAIN_FOUND)
-            if tchain.complete:
-                errs = validity_errors(tchain, token.gen_time)
-                self.ok("tsp.validity", not errs,
-                        f"TSA certificate was valid at {token.gen_time.isoformat()}",
-                        "; ".join(errs), severity=Severity.POLICY, sub=SubIndication.EXPIRED)
+
+    def _tsa_chain(self, token: TimestampToken | None) -> bool:
+        """Whether this timestamp may stand as proof of existence.
+
+        genTime is a claim until the TSA that made it reaches an anchor; taken on
+        trust it back-dates a signature past its certificate's expiry or revocation.
+        """
+        if token is None:
+            return False
+        chain = build_chain(token.tsa_cert, list(token.view.certificates), self.p.anchors)
+        self.tsa_chain = chain
+        self.rep.details["tsa_chain"] = chain.names()
+        self.ok("tsp.chain", chain.complete,
+                "TSA chain reaches the trust anchor",
+                f"TSA has no trusted chain: {chain.error}",
+                severity=Severity.POLICY, sub=SubIndication.NO_CERTIFICATE_CHAIN_FOUND)
+        if not chain.complete:
+            return False
+        errs = validity_errors(chain, token.gen_time)
+        self.ok("tsp.validity", not errs,
+                f"TSA certificate was valid at {token.gen_time.isoformat()}",
+                "; ".join(errs), severity=Severity.POLICY, sub=SubIndication.EXPIRED)
+        return not errs
 
     def _revocation(self, view: SignedDataView) -> None:
         urls = revocation_urls(view.signer_cert)

@@ -61,6 +61,16 @@ class RevocationStore:
         skipped: list[str] = []
         usable: list[acrl.CertificateList] = []
 
+        # However well the signature checks out, a key never authorised for CRLs
+        # answers for nothing (RFC 5280 6.3.3).
+        ku = issuer.key_usage_value
+        if ku is not None and "crl_sign" not in ku.native:
+            return RevocationResult(
+                UNKNOWN, f"{issuer.subject.native.get('common_name') or 'the issuer'} has no "
+                         "cRLSign key usage, so no CRL it signed answers for this certificate",
+                {"crls_considered": len(self.crls), "issuer_key_usage": sorted(ku.native)},
+                "no_crl")
+
         for c in self.crls:
             if c.issuer != cert.issuer:
                 continue

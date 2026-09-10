@@ -154,23 +154,27 @@ def test_all_crl_mirrors_are_reported_not_just_the_first(pki, trusted):
     assert urls["ocsp"] == [fixtures.OCSP_URL]
 
 
+def stub_opener(monkeypatch, body: bytes, asked: list, fail: str = "") -> None:
+    import io
+
+    from fiverify import online
+
+    class Opener:
+        def open(self, req, timeout=None):
+            asked.append(req.full_url)
+            if fail and fail in req.full_url:
+                raise OSError("mirror down")
+            return io.BytesIO(body)
+
+    monkeypatch.setattr(online, "_opener", Opener)
+
+
 def test_fetch_crls_downloads_every_url(pki, monkeypatch):
     """Exercises the real fetch path against a stubbed opener."""
-    import io
-    import urllib.request
-
     from fiverify.online import certificates_in, fetch_crls
 
-    crl = fixtures.make_crl(pki)
     asked = []
-
-    def fake_urlopen(req, timeout=None):
-        asked.append(req.full_url)
-        if "crl2" in req.full_url:
-            raise OSError("mirror down")
-        return io.BytesIO(crl)
-
-    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    stub_opener(monkeypatch, fixtures.make_crl(pki), asked, fail="crl2")
     pdf, _ = fixtures.signed_pdf(pki)
     store, errors = fetch_crls(certificates_in(pdf))
     assert asked == fixtures.CRL_URLS
@@ -178,12 +182,86 @@ def test_fetch_crls_downloads_every_url(pki, monkeypatch):
 
 
 def test_fetched_crls_are_used(pki, trusted, monkeypatch):
-    import io
-    import urllib.request
-
-    crl = fixtures.make_crl(pki)
-    monkeypatch.setattr(urllib.request, "urlopen", lambda req, timeout=None: io.BytesIO(crl))
+    asked = []
+    stub_opener(monkeypatch, fixtures.make_crl(pki), asked)
     pdf, _ = fixtures.signed_pdf(pki)
     r = verify_pdf(pdf, profile=trusted, fetch_revocation=True)
+    assert asked == fixtures.CRL_URLS
     assert r.status is Status.PASSED and r.caveats == []
     assert check(r, "revocation.signer").status is Status.PASSED
+
+
+def test_nothing_is_fetched_for_an_unanchored_certificate(pki, profile, monkeypatch):
+    """A distribution point is a URL the document chose; opening one before the
+    certificate carrying it is anchored makes verification a fetch primitive."""
+    asked = []
+    stub_opener(monkeypatch, fixtures.make_crl(pki), asked)
+    pdf, _ = fixtures.signed_pdf(pki)
+    r = verify_pdf(pdf, profile=profile, fetch_revocation=True)  # anchors do not cover pki
+    assert asked == []
+    assert check(r, "chain.built").status is Status.FAILED
+    assert "no chain reached a trust anchor" in check(r, "revocation.fetch").summary
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "ftp://host.test/x.crl",
+                                 "data:application/pkix-crl;base64,AAAA", "http:///x.crl"])
+def test_only_http_distribution_points_are_opened(pki, url, monkeypatch):
+    from fiverify.online import fetch_crls
+
+    asked = []
+    stub_opener(monkeypatch, b"", asked)
+    rogue = fixtures.make_pki(crl_urls=[url])
+    store, errors = fetch_crls([rogue.asn1(rogue.signer_cert)])
+    assert asked == [] and len(store) == 0
+    assert "refused" in errors[0]
+
+
+def test_a_redirect_out_of_http_is_not_followed():
+    from fiverify.online import _HTTPOnlyRedirects
+
+    handler = _HTTPOnlyRedirects()
+    assert handler.redirect_request(None, None, 302, "Found", {},
+                                    "file:///etc/passwd") is None
+
+
+def test_an_oversized_response_is_dropped(pki, monkeypatch):
+    from fiverify import online
+
+    asked = []
+    stub_opener(monkeypatch, fixtures.make_crl(pki), asked)
+    monkeypatch.setattr(online, "MAX_BYTES", 8)
+    store, errors = online.fetch_crls([pki.asn1(pki.signer_cert)])
+    assert len(store) == 0
+    assert "larger than" in errors[0]
+
+
+def test_distribution_points_are_capped(pki, monkeypatch):
+    from fiverify.online import fetch_crls
+
+    asked = []
+    stub_opener(monkeypatch, fixtures.make_crl(pki), asked)
+    store, errors = fetch_crls([pki.asn1(pki.signer_cert)], max_urls=1)
+    assert asked == fixtures.CRL_URLS[:1]
+    assert "beyond the 1-URL cap" in errors[0]
+
+
+def test_allowed_hosts_pins_the_distribution_point(pki, monkeypatch):
+    from fiverify.online import fetch_crls
+
+    asked = []
+    stub_opener(monkeypatch, fixtures.make_crl(pki), asked)
+    store, errors = fetch_crls([pki.asn1(pki.signer_cert)],
+                               allowed_hosts=["crl.example.test"])
+    assert asked == ["http://crl.example.test/test.crl"]
+    assert "not in allowed_hosts" in errors[0]
+
+
+def test_issuer_without_crl_sign_cannot_answer(trusted):
+    """However well the signature checks out, that key was never authorised for CRLs."""
+    pki = fixtures.make_pki(ca_crl_sign=False)
+    from fiverify.profile import Profile
+    pdf, _ = fixtures.signed_pdf(pki)
+    r = verify_pdf(pdf, profile=Profile.bundled().with_anchors(pki.anchors()),
+                   revocation=store(fixtures.make_crl(pki)))
+    c = check(r, "revocation.signer")
+    assert c.status is Status.INDETERMINATE and "cRLSign" in c.summary

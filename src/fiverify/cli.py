@@ -58,7 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--crl", type=Path, action="append", default=[], metavar="PATH",
                     help="CRL file or directory of them; repeatable. Offline")
     ap.add_argument("--fetch-revocation", action="store_true",
-                    help="download CRLs named by the certificates. THE ONLY NETWORK ACCESS")
+                    help="download the CRLs anchored certificates name. THE ONLY NETWORK ACCESS")
     ap.add_argument("--strict-revocation", action="store_true",
                     help="require a CRL issued after the timestamp, not merely one in "
                          "force over it")

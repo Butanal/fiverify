@@ -53,18 +53,27 @@ honestly say a certificate was good. Your options, least to most trusting:
 | Demand post-dated CRLs | `--strict-revocation` | `strict_revocation=True` |
 
 Revocation is evaluated **at the signing timestamp**, not now, so a
-certificate revoked afterward doesn't invalidate the seal. `--strict-revocation`
+certificate revoked afterward doesn't invalidate the seal — and only if that
+timestamp came from a TSA that chains to an anchor, since an untrusted one
+would be free to back-date the seal past the revocation. `--strict-revocation`
 requires a CRL issued after that timestamp rather than one merely in force
 over it — the stronger guarantee needed for archival validation.
+
+`--fetch-revocation` downloads only what an *anchored* certificate names, and
+only over HTTP(S): a distribution point is a URL chosen by whoever wrote the
+document, so fetching one before its certificate reaches a trust anchor would
+make verification a fetch primitive. To pin the hosts as well, fetch separately
+with `fetch_for_pdf(data, allowed_hosts=[...])` and pass the store in.
 
 ## Identity attributes
 
 Fields like `familyName`, `givenName`, `birthdate` are not extracted unless
 you ask (`--attributes` / `extract_attributes=True`), and **are only ever
-returned from bytes a signature covers** — a document can be forged so the
-seal still verifies while content changed underneath it (see
-`examples/forged-append.pdf`), and `report.attributes` stays `None` rather
-than trusting that content.
+returned from bytes covered by a signature that reaches a trust anchor** — a
+document can be forged so the seal still verifies while content changed
+underneath it (see `examples/forged-append.pdf`), or simply signed by its
+author's own certificate, and `report.attributes` stays `None` rather than
+trusting that content.
 
 ## Reading the report
 
@@ -111,5 +120,5 @@ for rollover instructions.
 
     pip install pytest && python3 -m pytest
 
-75 tests, offline, no fixtures checked in — generated against a throwaway PKI,
+88 tests, offline, no fixtures checked in — generated against a throwaway PKI,
 with every signature-arithmetic verdict cross-checked against `openssl`.

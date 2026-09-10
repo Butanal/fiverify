@@ -109,6 +109,32 @@ def test_poe_comes_from_the_timestamp_not_the_clock(pki, trusted):
     assert later.signatures[0].details["poe_source"] == "timestamp"
 
 
+def test_an_untrusted_tsa_cannot_supply_the_poe(pki, trusted):
+    """genTime is only a claim until the TSA is anchored; taken on trust it
+    back-dates the seal past the moment the certificate was revoked."""
+    from cryptography.x509 import ReasonFlags
+
+    from fiverify.revocation import RevocationStore
+
+    rogue = fixtures.make_pki()
+    hybrid = fixtures.PKI(pki.ca_key, pki.ca_cert, pki.signer_key, pki.signer_cert,
+                          rogue.tsa_key, rogue.tsa_cert)
+    pdf, _ = fixtures.signed_pdf(
+        hybrid, tst_kwargs={"gen_time": datetime(2026, 8, 1, tzinfo=timezone.utc)})
+    crl = fixtures.make_crl(pki, revoked=[(pki.signer_cert.serial_number,
+                                           datetime(2026, 9, 1, tzinfo=timezone.utc),
+                                           ReasonFlags.key_compromise)])
+    revocation = RevocationStore()
+    revocation.add(crl)
+
+    r = verify_pdf(pdf, profile=trusted, revocation=revocation,
+                   at=datetime(2026, 9, 20, tzinfo=timezone.utc))
+    assert r.signatures[0].details["poe_source"] == "wall clock"
+    assert check(r, "revocation.signer").status is Status.FAILED
+    assert r.status is Status.FAILED
+    assert any("not used as proof of existence" in c for c in r.caveats)
+
+
 def test_without_a_timestamp_expiry_is_measured_against_the_clock(pki, trusted):
     pdf, _ = fixtures.signed_pdf(pki, timestamp=False)
     r = verify_pdf(pdf, profile=trusted, at=datetime(2040, 1, 1, tzinfo=timezone.utc))

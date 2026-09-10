@@ -71,7 +71,8 @@ class PKI:
 
 def make_pki(*, not_before: datetime | None = None, not_after: datetime | None = None,
              qc: dict | None = None, tsa_eku_critical: bool = True,
-             key_bits: int = 2048) -> PKI:
+             key_bits: int = 2048, crl_urls: list[str] | None = None,
+             ca_crl_sign: bool = True) -> PKI:
     nb = not_before or datetime(2025, 1, 1, tzinfo=timezone.utc)
     na = not_after or datetime(2030, 1, 1, tzinfo=timezone.utc)
     ca_key = rsa.generate_private_key(public_exponent=65537, key_size=key_bits)
@@ -83,7 +84,8 @@ def make_pki(*, not_before: datetime | None = None, not_after: datetime | None =
         .serial_number(cx509.random_serial_number())
         .not_valid_before(nb).not_valid_after(na)
         .add_extension(cx509.BasicConstraints(ca=True, path_length=None), critical=True)
-        .add_extension(cx509.KeyUsage(False, False, False, False, False, True, True, False, False), critical=True)
+        .add_extension(cx509.KeyUsage(False, False, False, False, False, True, ca_crl_sign,
+                                      False, False), critical=True)
         .sign(ca_key, hashes.SHA256())
     )
 
@@ -108,7 +110,8 @@ def make_pki(*, not_before: datetime | None = None, not_after: datetime | None =
         ku=cx509.KeyUsage(True, True, False, False, False, False, False, False, False),
         extra=[(cx509.UnrecognizedExtension(QC_EXT_OID, _qc_extension(**qc)), False),
                (cx509.CRLDistributionPoints([cx509.DistributionPoint(
-                   full_name=[cx509.UniformResourceIdentifier(u) for u in CRL_URLS],
+                   full_name=[cx509.UniformResourceIdentifier(u)
+                             for u in (crl_urls or CRL_URLS)],
                    relative_name=None, crl_issuer=None, reasons=None)]), False),
                (cx509.AuthorityInformationAccess([cx509.AccessDescription(
                    AuthorityInformationAccessOID.OCSP,

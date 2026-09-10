@@ -61,6 +61,30 @@ def test_withheld_when_a_revision_was_appended(pki, trusted):
     assert r.attributes is None
 
 
+def test_withheld_when_the_signature_reaches_no_anchor(profile):
+    """Self-signed forgeries hold together perfectly; integrity is not identity."""
+    pdf, _ = fixtures.signed_pdf(fixtures.make_pki(), attributes=fixtures.ATTRIBUTES)
+    r = verify_pdf(pdf, profile=profile, extract_attributes=True)
+    assert check(r, "cms.signature").status is Status.PASSED
+    assert check(r, "chain.built").status is Status.FAILED
+    assert r.attributes is None
+    assert "chains to a trust anchor" in check(r, "attributes.withheld").summary
+
+
+def test_flate_bombs_are_bounded(pki):
+    """A 200 KB stream expands to 200 MB; a few of them would exhaust memory."""
+    import zlib
+
+    from fiverify.attributes import MAX_STREAM, _bodies
+
+    pdf, _ = fixtures.signed_pdf(pki, attributes=fixtures.ATTRIBUTES)
+    bomb = zlib.compress(b"\x00" * (MAX_STREAM * 4))
+    pdf += (b"\n99 0 obj\n<< /Filter /FlateDecode /Length " + str(len(bomb)).encode()
+            + b" >>\nstream\n" + bomb + b"\nendstream\nendobj\n")
+    assert max(len(b) for b in _bodies(pdf)) <= MAX_STREAM
+    assert extract(pdf) == fixtures.ATTRIBUTES
+
+
 def test_withheld_from_an_unsigned_document(trusted):
     r = verify_pdf(b"%PDF-1.7\n/familyName (DUPONT) /givenName (Jean) /gender (M)\n%%EOF\n",
                    profile=trusted, extract_attributes=True)
